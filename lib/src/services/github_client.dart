@@ -1,5 +1,24 @@
+import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 import 'cache_service.dart';
+
+/// A parsed GitHub repository reference: owner/repo, an assumed default
+/// branch, and an optional monorepo subdirectory (e.g. for repos where the
+/// pub.dev `repository` URL points at `tree/main/packages/foo`).
+class GithubRepoRef {
+  final String owner;
+  final String repo;
+  final String branch;
+  final String subPath;
+
+  const GithubRepoRef({
+    required this.owner,
+    required this.repo,
+    required this.branch,
+    required this.subPath,
+  });
+}
 
 /// Checks a plugin's GitHub repository for an `ios/Package.swift` or
 /// `macos/Package.swift` file to determine SPM support directly from source.
@@ -22,24 +41,12 @@ class GithubClient {
       return cached['hasPackageSwift'] as bool;
     }
 
-    // Parse github URL
-    final uri = Uri.tryParse(repoUrl);
-    if (uri == null || uri.host != 'github.com') return null;
-
-    final pathSegments = uri.pathSegments;
-    if (pathSegments.length < 2) return null;
-
-    final owner = pathSegments[0];
-    final repo = pathSegments[1];
-
-    // If it's a monorepo, the URL might be like: tree/main/packages/url_launcher
-    String subPath = '';
-    String branch = 'main'; // Assume main, fallback to master if needed
-
-    if (pathSegments.length > 4 && pathSegments[2] == 'tree') {
-      branch = pathSegments[3];
-      subPath = '${pathSegments.sublist(4).join('/')}/';
-    }
+    final ref = parseRepoUrl(repoUrl);
+    if (ref == null) return null;
+    final owner = ref.owner;
+    final repo = ref.repo;
+    final branch = ref.branch;
+    final subPath = ref.subPath;
 
     final hasIos = await _checkFileExists(
       owner,
@@ -89,6 +96,130 @@ class GithubClient {
       return false;
     }
 
+    return null;
+  }
+
+  /// Parses a pub.dev `repository`/`homepage` URL into a [GithubRepoRef],
+  /// or returns `null` if [repoUrl] doesn't point at github.com.
+  ///
+  /// Handles monorepo URLs of the form `.../tree/<branch>/path/to/package`,
+  /// resolving [GithubRepoRef.subPath] to the package's subdirectory.
+  static GithubRepoRef? parseRepoUrl(String repoUrl) {
+    final uri = Uri.tryParse(repoUrl);
+    if (uri == null || uri.host != 'github.com') return null;
+
+    final pathSegments = uri.pathSegments;
+    if (pathSegments.length < 2) return null;
+
+    final owner = pathSegments[0];
+    final repo = pathSegments[1];
+
+    // If it's a monorepo, the URL might be like: tree/main/packages/url_launcher
+    String subPath = '';
+    String branch = 'main'; // Assume main, fallback to master if needed
+
+    if (pathSegments.length > 4 && pathSegments[2] == 'tree') {
+      branch = pathSegments[3];
+      subPath = '${pathSegments.sublist(4).join('/')}/';
+    }
+
+    return GithubRepoRef(
+      owner: owner,
+      repo: repo,
+      branch: branch,
+      subPath: subPath,
+    );
+  }
+
+  /// Lists files directly inside [dirPath] of the repo at [repoUrl] (one
+  /// level, not recursive), trying `main` then `master`. Returns `null` if
+  /// the directory doesn't exist on either branch, the repo URL can't be
+  /// parsed, or the API call fails (e.g. rate limit) — callers should treat
+  /// `null` as "unknown", not "empty".
+  Future<List<String>?> listDirectory(String repoUrl, String dirPath) async {
+    final ref = parseRepoUrl(repoUrl);
+    if (ref == null) return null;
+
+    final fullPath = '${ref.subPath}$dirPath';
+
+    for (final branch in {ref.branch, 'master'}) {
+      final result = await _listDirectoryOnBranch(
+        ref.owner,
+        ref.repo,
+        branch,
+        fullPath,
+      );
+      if (result != null) return result;
+    }
+    return null;
+  }
+
+  Future<List<String>?> _listDirectoryOnBranch(
+    String owner,
+    String repo,
+    String branch,
+    String dirPath,
+  ) async {
+    final headers = <String, String>{
+      'Accept': 'application/vnd.github.v3+json',
+    };
+    final token = _token;
+    if (token != null && token.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $token';
+    }
+
+    try {
+      final response = await _client.get(
+        Uri.parse(
+          'https://api.github.com/repos/$owner/$repo/contents/$dirPath?ref=$branch',
+        ),
+        headers: headers,
+      );
+
+      if (response.statusCode == 200) {
+        final List<dynamic> entries = jsonDecode(response.body);
+        return entries
+            .where((e) => e is Map && e['type'] == 'file')
+            .map((e) => e['path'] as String)
+            .toList();
+      }
+    } catch (_) {
+      // Network error; fall through to null.
+    }
+    return null;
+  }
+
+  /// Fetches the raw text content of [filePath] from the repo at [repoUrl]
+  /// on [branch]. Returns `null` on any failure (missing file, network
+  /// error, rate limit) rather than throwing, so callers can treat it as
+  /// "unknown" alongside other heuristic gaps.
+  Future<String?> fetchRawFile(
+    String repoUrl,
+    String filePath, {
+    required String branch,
+  }) async {
+    final ref = parseRepoUrl(repoUrl);
+    if (ref == null) return null;
+
+    final headers = <String, String>{};
+    final token = _token;
+    if (token != null && token.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $token';
+    }
+
+    try {
+      final response = await _client.get(
+        Uri.parse(
+          'https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/$branch/$filePath',
+        ),
+        headers: headers,
+      );
+      if (response.statusCode == 200) {
+        return response.body;
+      }
+    } catch (_) {
+      // Network error; fall through to null.
+    }
     return null;
   }
 

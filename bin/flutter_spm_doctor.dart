@@ -1,144 +1,56 @@
 import 'dart:io';
-import 'package:args/args.dart';
-import 'package:http/http.dart' as http;
+import 'package:args/command_runner.dart';
 
-import 'package:flutter_spm_doctor/flutter_spm_doctor.dart';
+import 'package:flutter_spm_doctor/src/commands/android16kb_command.dart';
+import 'package:flutter_spm_doctor/src/commands/all_command.dart';
+import 'package:flutter_spm_doctor/src/commands/spm_command.dart';
+import 'package:flutter_spm_doctor/src/commands/uiscene_command.dart';
+
+/// Subcommand names recognized by the CLI. Used to decide whether to
+/// transparently prepend the default `spm` command for backward
+/// compatibility with pre-0.2.0 invocations like `flutter_spm_doctor --json`.
+const _knownCommands = {'spm', 'uiscene', 'android16kb', 'all'};
 
 Future<void> main(List<String> arguments) async {
-  final parser = ArgParser()
-    ..addFlag(
-      'help',
-      abbr: 'h',
-      negatable: false,
-      help: 'Print this usage information.',
-    )
-    ..addFlag(
-      'json',
-      negatable: false,
-      help: 'Output the report as structured JSON.',
-    )
-    ..addFlag(
-      'fail-on-unsupported',
-      negatable: false,
-      help: 'Exits with code 1 if any plugin is not SPM-supported.',
-    )
-    ..addOption('ignore', help: 'Comma-separated list of packages to ignore.')
-    ..addOption(
-      'generate-issue',
-      help: 'Prints a ready-to-paste GitHub issue body for a specific package.',
-    )
-    ..addOption(
-      'github-token',
-      help: 'GitHub Personal Access Token to avoid API rate limits.',
-    );
+  final runner =
+      CommandRunner<void>(
+          'flutter_spm_doctor',
+          'Detect Flutter ecosystem migration issues (SPM, UIScene lifecycle, '
+              'Android 16KB page alignment) across your plugin dependencies.',
+        )
+        ..addCommand(SpmCommand())
+        ..addCommand(UiSceneCommand())
+        ..addCommand(Android16kbCommand())
+        ..addCommand(AllCommand());
 
-  final ArgResults argResults;
+  // Backward compatibility: prior to 0.2.0, this tool had no subcommands and
+  // always ran the SPM check. If the first argument isn't a recognized
+  // subcommand (or a global flag like --help), treat the invocation as an
+  // implicit `spm` call so existing scripts/CI configs keep working.
+  final effectiveArgs = _withDefaultCommand(arguments);
+
   try {
-    argResults = parser.parse(arguments);
-  } catch (e) {
+    await runner.run(effectiveArgs);
+  } on UsageException catch (e) {
     print(e);
-    print(parser.usage);
-    exit(1);
+    exit(64);
   }
 
-  if (argResults['help']) {
-    print(
-      'Detect which Flutter plugin dependencies haven\'t migrated to SPM.\n',
-    );
-    print(parser.usage);
-    exit(0);
+  exit(exitCode);
+}
+
+List<String> _withDefaultCommand(List<String> arguments) {
+  if (arguments.isEmpty) {
+    return ['spm'];
   }
 
-  final String? generateIssuePackage = argResults['generate-issue'];
-  if (generateIssuePackage != null) {
-    IssueTemplate.printTemplate(generateIssuePackage);
-    exit(0);
+  final first = arguments.first;
+  if (_knownCommands.contains(first) ||
+      first == '-h' ||
+      first == '--help' ||
+      first == 'help') {
+    return arguments;
   }
 
-  final bool outputJson = argResults['json'];
-  final bool failOnUnsupported = argResults['fail-on-unsupported'];
-  final String? ignoreOpt = argResults['ignore'];
-  final List<String> ignoreList =
-      ignoreOpt?.split(',').map((e) => e.trim()).toList() ?? [];
-
-  String? githubToken =
-      argResults['github-token'] ?? Platform.environment['GITHUB_TOKEN'];
-
-  if (!outputJson) {
-    print('Reading pubspec dependencies...');
-  }
-
-  final reader = PubspecReader();
-  Map<String, String> dependencies;
-  try {
-    dependencies = await reader.getDependencies();
-  } catch (e) {
-    if (outputJson) {
-      print('{"error": "${e.toString()}"}');
-    } else {
-      print('Error: $e');
-    }
-    exit(1);
-  }
-
-  // Remove ignored packages
-  for (final pkg in ignoreList) {
-    dependencies.remove(pkg);
-  }
-
-  if (dependencies.isEmpty) {
-    if (outputJson) {
-      print('{"plugins": []}');
-    } else {
-      print('No external dependencies found.');
-    }
-    exit(0);
-  }
-
-  final client = http.Client();
-  final cache = CacheService();
-  final pubClient = PubDevClient(client, cache);
-  final githubClient = GithubClient(client, cache, token: githubToken);
-  final checker = SpmChecker(pubClient, githubClient);
-
-  final plugins = <PluginInfo>[];
-
-  if (!outputJson) {
-    print(
-      'Checking ${dependencies.length} packages (this may take a moment)...',
-    );
-  }
-
-  for (final entry in dependencies.entries) {
-    final info = await checker.checkPlugin(entry.key, entry.value);
-    if (info != null) {
-      plugins.add(info);
-    }
-  }
-
-  client.close();
-
-  if (plugins.isEmpty) {
-    if (outputJson) {
-      print('{"plugins": []}');
-    } else {
-      print('\nNo iOS/macOS plugins found in dependencies. You\'re all set!');
-    }
-    exit(0);
-  }
-
-  if (outputJson) {
-    JsonReporter().report(plugins);
-  } else {
-    ConsoleReporter().report(plugins);
-  }
-
-  if (failOnUnsupported) {
-    final hasUnsupported = plugins.any(
-      (p) => p.status == SpmStatus.notSupported,
-    );
-    if (hasUnsupported) {
-      exit(1);
-    }
-  }
+  return ['spm', ...arguments];
 }

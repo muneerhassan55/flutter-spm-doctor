@@ -37,6 +37,7 @@ class PubDevClient {
         String? repoUrl = pubspec['repository'] ?? pubspec['homepage'];
 
         bool isPlugin = false;
+        bool isAndroidPlugin = false;
         final flutter = pubspec['flutter'];
         if (flutter != null && flutter is Map) {
           final plugin = flutter['plugin'];
@@ -47,6 +48,9 @@ class PubDevClient {
                   platforms.containsKey('macos')) {
                 isPlugin = true;
               }
+              if (platforms.containsKey('android')) {
+                isAndroidPlugin = true;
+              }
             }
           }
         }
@@ -54,6 +58,7 @@ class PubDevClient {
         final info = PubPackageInfo(
           repositoryUrl: repoUrl,
           isIosMacosPlugin: isPlugin,
+          isAndroidPlugin: isAndroidPlugin,
         );
 
         await _cache.set(cacheKey, info.toJson());
@@ -75,14 +80,22 @@ class PubPackageInfo {
   /// Whether this package declares native iOS or macOS plugin platforms.
   final bool isIosMacosPlugin;
 
+  /// Whether this package declares a native Android plugin platform.
+  final bool isAndroidPlugin;
+
   /// Creates a [PubPackageInfo] from already-fetched pub.dev data.
-  PubPackageInfo({this.repositoryUrl, required this.isIosMacosPlugin});
+  PubPackageInfo({
+    this.repositoryUrl,
+    required this.isIosMacosPlugin,
+    this.isAndroidPlugin = false,
+  });
 
   /// Restores a [PubPackageInfo] from its cached JSON representation.
   factory PubPackageInfo.fromJson(Map<String, dynamic> json) {
     return PubPackageInfo(
       repositoryUrl: json['repositoryUrl'] as String?,
-      isIosMacosPlugin: json['isIosMacosPlugin'] as bool,
+      isIosMacosPlugin: json['isIosMacosPlugin'] as bool? ?? false,
+      isAndroidPlugin: json['isAndroidPlugin'] as bool? ?? false,
     );
   }
 
@@ -91,6 +104,7 @@ class PubPackageInfo {
     return {
       'repositoryUrl': repositoryUrl,
       'isIosMacosPlugin': isIosMacosPlugin,
+      'isAndroidPlugin': isAndroidPlugin,
     };
   }
 }

@@ -3,28 +3,43 @@
 [![pub package](https://img.shields.io/pub/v/flutter_spm_doctor.svg)](https://pub.dev/packages/flutter_spm_doctor)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Detect which Flutter plugin dependencies haven't migrated to Swift Package Manager (SPM) yet — a CLI doctor for the CocoaPods → SPM transition.
+**Flutter Swift Package Manager (SPM) checker, UIScene lifecycle migration checker, and Android 16KB page-size alignment checker — all in one CLI doctor.**
+
+A Flutter migration doctor for your plugin dependencies. It checks your project's `pubspec.lock` against three separate, currently-relevant Flutter ecosystem migrations and tells you which plugins are blocking you:
+
+1. **Swift Package Manager (SPM)** — replacing CocoaPods on iOS/macOS.
+2. **UIScene lifecycle** — the new iOS app-lifecycle model plugins must individually adopt.
+3. **Android 16KB page-size alignment** — a native-library requirement for Android 15+ devices.
+
+Each check can be run on its own, or all together with `all`. The original SPM check remains the default — running `flutter_spm_doctor` with no arguments behaves exactly as it did before 0.2.0.
 
 ## Why this exists
 
-As of Flutter 3.44, Swift Package Manager is the default iOS/macOS dependency manager, replacing CocoaPods. Plugins that haven't added a `Package.swift` file still work today via a CocoaPods fallback, but that fallback won't last forever — the CocoaPods trunk registry goes read-only on **December 2, 2026**.
+Flutter's ecosystem is mid-migration on multiple fronts at once, and there's no single place to see which of *your* dependencies are blocking you on any of them. Today you'd have to manually open each plugin's GitHub repo, dig through scattered migration-status threads, or build and inspect an APK by hand. `flutter_spm_doctor` automates all three audits from one CLI.
 
-Right now only a fraction of popular iOS plugins have migrated, and there's no easy way to audit your own project's dependency tree to see which ones are blocking you. Today you'd have to manually open every plugin's GitHub repo, dig for an `ios/Package.swift` file, and read scattered migration-status threads.
+### Swift Package Manager (SPM)
 
-`flutter_spm_doctor` automates that audit: it reads your `pubspec.lock`, finds your native iOS/macOS plugins, checks each one's SPM status, and gives you a clear report — plus tools to push migration along (CI gating, ready-to-file GitHub issues).
+As of Flutter 3.44, Swift Package Manager is the default iOS/macOS dependency manager, replacing CocoaPods. Plugins that haven't added a `Package.swift` file still work today via a CocoaPods fallback, but that fallback won't last forever — the CocoaPods trunk registry goes read-only on **December 2, 2026**. Right now only a fraction of popular iOS plugins have migrated.
+
+### UIScene lifecycle
+
+As of Flutter 3.41, UIScene lifecycle support is the default for iOS apps, and the app itself is migrated automatically. But plugins that hook into app lifecycle events (background tasks, push notifications, deep links, app-state listeners) must individually adopt the `FlutterSceneLifeCycleDelegate` protocol. Starting with the Flutter/iOS release following iOS 26, apps with non-migrated lifecycle-dependent plugins risk failing to launch or having broken lifecycle behavior.
+
+This is a very recent, fast-evolving area of the SDK, so `flutter_spm_doctor`'s detection here is deliberately heuristic and conservative: it scans a plugin's iOS source for known `AppDelegate` lifecycle method names and `FlutterSceneLifeCycleDelegate` adoption, and favors flagging something for manual review over silently giving it a pass. Always cross-check against [Flutter's official UIScene migration guide](https://docs.flutter.dev/platform-integration/ios/ios-uiscenedelegate) for the final word.
+
+### Android 16KB page-size alignment
+
+Since November 2025, Android requires native libraries in apps targeting Android 15+ devices to be 16KB-page-size aligned (previously 4KB was sufficient). Apps with non-compliant native `.so` libraries — often bundled inside plugin packages, including *transitive* dependencies — get rejected or flagged by Google Play Console. `flutter_spm_doctor` walks your full resolved dependency tree (not just direct dependencies) and, given a built APK/AAB, parses ELF program headers directly (in pure Dart) to check real alignment values.
 
 ## Features
 
-- 🔍 **Automatic plugin detection** — parses `pubspec.lock`/`pubspec.yaml` and filters to packages with native iOS/macOS code.
-- 🧭 **Tiered SPM detection**
-  1. Checks the plugin's linked GitHub repo for `ios/Package.swift` or `macos/Package.swift`.
-  2. Falls back to a bundled, community-updatable list of known plugins (`known_spm_status.json`).
-  3. Falls back to "Unknown — verify manually" with a direct link to search the repo's issues.
-- 🎨 **Color-coded console report** with a pass/fail summary line.
+- 🔍 **Automatic plugin detection** — parses `pubspec.lock` and filters to packages with native iOS/macOS/Android code.
+- 🧭 **Tiered detection** for each check: inspect the real source/binary first, fall back to a bundled known-status list, then fall back to "Unknown — verify manually."
+- 🎨 **Color-coded console report** with a pass/fail summary line per check.
 - 🤖 **`--json` output** for CI pipelines and other tooling.
 - 🚦 **CI gating** via `--fail-on-unsupported`, with an `--ignore` allowlist for packages you've already accepted as blocked.
-- ✍️ **One-command GitHub issue drafting** (`--generate-issue`) so you can ask a maintainer to add SPM support without writing the request yourself.
-- ⚡ **Local caching** (`.dart_tool/spm_doctor_cache.json`, 24h TTL) to avoid hammering pub.dev/GitHub on repeated runs.
+- ✍️ **One-command GitHub issue drafting** (`--generate-issue`) for the SPM check.
+- ⚡ **Local caching** (`.dart_tool/flutter_spm_doctor/`, 24h TTL) to avoid hammering pub.dev/GitHub on repeated runs.
 - 🪶 **Pure Dart** — no Flutter SDK required to run the tool itself.
 
 ## Installation
@@ -43,23 +58,48 @@ dart pub add dev:flutter_spm_doctor
 
 ## Usage
 
-Run the doctor from your Flutter project's root directory (next to `pubspec.lock`):
+Run from your Flutter project's root directory (next to `pubspec.lock`):
 
 ```bash
-flutter_spm_doctor
-# or, if added as a dev dependency
-dart run flutter_spm_doctor
+flutter_spm_doctor                  # default: SPM check (unchanged pre-0.2.0 behavior)
+flutter_spm_doctor spm              # explicit SPM check, same as above
+flutter_spm_doctor uiscene          # UIScene lifecycle check
+flutter_spm_doctor android16kb      # Android 16KB alignment check
+flutter_spm_doctor all              # run all three, sectioned report
 ```
 
-### Options
+### `spm` options
 
 | Flag | Description |
 |---|---|
-| `--json` | Output the report as structured JSON instead of a console table. |
-| `--fail-on-unsupported` | Exit with code `1` if any plugin is not SPM-supported. Use this in CI to gate builds. |
-| `--ignore=<packages>` | Comma-separated list of packages to exclude from the report/exit-code check, e.g. `--ignore=package_a,package_b`. |
+| `--json` | Output the report as structured JSON. |
+| `--fail-on-unsupported` | Exit with code `1` if any plugin is not SPM-supported. |
+| `--ignore=<packages>` | Comma-separated list of packages to exclude, e.g. `--ignore=package_a,package_b`. |
 | `--generate-issue=<package>` | Print a ready-to-paste GitHub issue body asking the maintainer to add SPM support, pre-filled with the plugin name and your local Flutter version. |
 | `--github-token=<token>` | GitHub personal access token, used to raise the GitHub API rate limit. Can also be set via the `GITHUB_TOKEN` environment variable. |
+
+### `uiscene` options
+
+| Flag | Description |
+|---|---|
+| `--json` | Output the report as structured JSON. |
+| `--fail-on-unsupported` | Exit with code `1` if any plugin needs review (uses lifecycle events without detected UIScene adoption). |
+| `--ignore=<packages>` | Comma-separated list of packages to exclude. |
+| `--github-token=<token>` | GitHub personal access token / `GITHUB_TOKEN` env var. |
+
+### `android16kb` options
+
+| Flag | Description |
+|---|---|
+| `--json` | Output the report as structured JSON. |
+| `--fail-on-unsupported` | Exit with code `1` if any plugin is not 16KB-aligned. |
+| `--ignore=<packages>` | Comma-separated list of packages to exclude. |
+| `--apk=<path>` | Path to a built APK — inspects bundled `.so` files directly via pure-Dart ELF parsing, instead of relying on the known-status list. |
+| `--aab=<path>` | Path to a built AAB. Same effect as `--apk`. |
+
+### `all` options
+
+Accepts `--json`, `--fail-on-unsupported`, `--ignore`, `--github-token`, `--apk`, and `--aab` — applied across all three checks.
 
 ## Example output
 
@@ -76,53 +116,75 @@ Checking SPM support for 5 iOS/macOS plugins...
 Summary: 2 of 4 plugins are SPM-ready.
 ```
 
+```
+flutter_spm_doctor uiscene
+
+Checking UIScene lifecycle migration for 3 iOS/macOS plugins...
+
+✅ some_modern_plugin (v2.0.0) - Migrated
+⚠️ legacy_push_plugin (v1.4.0) - Needs review: uses lifecycle events, no UIScene adoption detected
+   Inspect source: https://github.com/maintainer/legacy_push_plugin
+➖ url_launcher (v6.3.0) - Not applicable
+
+Summary: 1 of 3 plugins explicitly adopt UIScene lifecycle.
+Note: this check is heuristic (source-scan based) and this is a newly evolving area of the Flutter SDK. ...
+```
+
 ### JSON output
 
 ```bash
-flutter_spm_doctor --json
+flutter_spm_doctor spm --json
+flutter_spm_doctor all --json   # {"spm": {...}, "uiscene": {...}, "android16kb": {...}}
 ```
 
-```json
-{
-  "summary": { "ready": 2, "total": 4 },
-  "plugins": [
-    { "name": "package_info_plus", "version": "8.0.0", "status": "supported" },
-    { "name": "url_launcher", "version": "6.3.0", "status": "supported" },
-    {
-      "name": "outdated_plugin",
-      "version": "1.2.0",
-      "status": "unsupported",
-      "issueUrl": "https://github.com/maintainer/outdated_plugin/issues"
-    },
-    {
-      "name": "unknown_plugin",
-      "version": "2.0.0",
-      "status": "unknown",
-      "issueUrl": "https://github.com/author/unknown_plugin/issues?q=is%3Aissue+Swift+Package+Manager"
-    }
-  ]
-}
-```
-
-### Gating CI on SPM readiness
+### Gating CI on migration readiness
 
 ```bash
-flutter_spm_doctor --fail-on-unsupported --ignore=outdated_plugin
+flutter_spm_doctor all --fail-on-unsupported --ignore=outdated_plugin
 ```
 
-This fails the build if any *non-ignored* plugin lacks SPM support — handy for tracking migration progress without blocking on packages you've already triaged.
+Fails the build if any *non-ignored* plugin has an issue in any of the three checks — handy for tracking migration progress without blocking on packages you've already triaged.
 
-### Drafting a migration request
+### Checking real `.so` alignment from a built APK
 
 ```bash
-flutter_spm_doctor --generate-issue=outdated_plugin
+flutter build apk --release
+flutter_spm_doctor android16kb --apk=build/app/outputs/flutter-apk/app-release.apk
+```
+
+### Drafting an SPM migration request
+
+```bash
+flutter_spm_doctor spm --generate-issue=outdated_plugin
 ```
 
 Prints a filled-in issue body (based on Flutter's official migration guide) that you can paste straight into the plugin's GitHub issue tracker.
 
-## Contributing to `known_spm_status.json`
+## FAQ
 
-The bundled [`lib/src/known_spm_status.json`](lib/src/known_spm_status.json) file is a fallback list of well-known plugins and their last-checked SPM status, used when a plugin's GitHub repo can't be parsed automatically. If you know a plugin's status is stale or missing, PRs updating this file are welcome.
+#### How do I check if a Flutter plugin supports Swift Package Manager?
+
+Run `flutter_spm_doctor` (or `flutter_spm_doctor spm`) in your project root. It reads `pubspec.lock`, finds your iOS/macOS plugins, and reports which ones have a `Package.swift` and which are still CocoaPods-only.
+
+#### How do I know if my Flutter app is ready for the CocoaPods to SPM migration?
+
+Run the `spm` check with `--fail-on-unsupported` in CI. It exits non-zero if any non-ignored plugin hasn't migrated, so you can track readiness over time instead of finding out at the CocoaPods registry's December 2026 cutoff.
+
+#### How do I check Flutter plugins for UIScene lifecycle / iOS 26 lifecycle support?
+
+Run `flutter_spm_doctor uiscene`. It scans each plugin's iOS source for `AppDelegate` lifecycle hooks and `FlutterSceneLifeCycleDelegate` adoption and flags anything that needs manual review.
+
+#### How do I check Android 16KB page size alignment for Flutter plugins?
+
+Run `flutter_spm_doctor android16kb`, optionally with `--apk=<path>` against a built APK/AAB, to check whether your app's (including transitive) native `.so` libraries are 16KB-page-size aligned for Android 15+.
+
+#### Does this work without the Flutter SDK installed?
+
+Yes — it's pure Dart and only needs your project's `pubspec.lock`.
+
+## Contributing to the known-status lists
+
+[`lib/src/known_spm_status.json`](lib/src/known_spm_status.json) and [`lib/src/services/known_16kb_status.json`](lib/src/services/known_16kb_status.json) are fallback lists used when a plugin's source/binary can't be inspected automatically. The 16KB list ships empty — it needs real, community-sourced compliance data. PRs updating either file are welcome.
 
 ## License
 
