@@ -1,6 +1,6 @@
 name: flutter_spm_doctor
 description: Detect which Flutter plugin dependencies haven't migrated to Swift Package Manager. CLI doctor for the CocoaPods to SPM transition.
-version: 0.1.2
+version: 0.1.3
 repository: https://github.com/muneerhassan55/flutter-spm-doctor
 
 environment:

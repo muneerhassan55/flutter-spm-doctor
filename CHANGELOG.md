@@ -1,6 +1,8 @@
-## 0.1.1
+## 0.1.3
 
-- Add public GitHub repository link.
+- Fix repository URL and history.
+
+## 0.1.1
 
 ## 0.1.0
 
