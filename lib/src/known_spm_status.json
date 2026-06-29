@@ -1,0 +1,38 @@
+[
+  {
+    "name": "firebase_core",
+    "status": "supported"
+  },
+  {
+    "name": "firebase_auth",
+    "status": "supported"
+  },
+  {
+    "name": "cloud_firestore",
+    "status": "supported"
+  },
+  {
+    "name": "shared_preferences",
+    "status": "supported"
+  },
+  {
+    "name": "path_provider",
+    "status": "supported"
+  },
+  {
+    "name": "sqflite",
+    "status": "notSupported"
+  },
+  {
+    "name": "device_info_plus",
+    "status": "supported"
+  },
+  {
+    "name": "package_info_plus",
+    "status": "supported"
+  },
+  {
+    "name": "url_launcher",
+    "status": "supported"
+  }
+]
